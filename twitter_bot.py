@@ -1,11 +1,3 @@
-"""
-Twitter t.co URL Shortener Telegram Bot (Fast Version)
-=======================================================
-- Tweet POST করেই t.co পাওয়া যায় — আলাদা GET/DELETE নেই
-- অনেক দ্রুত কাজ করে
-- Duplicate protection চালু
-"""
-
 import logging
 import requests
 import time
@@ -14,92 +6,91 @@ import string
 from requests_oauthlib import OAuth1
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
-    ContextTypes,
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, filters, ContextTypes,
 )
 
-# ========== CONFIG ==========
 TELEGRAM_TOKEN = "8918620366:AAHO8KblMA2-9W7MRT4Pf-ZfHtZpR7uWA8k"
-
 TWITTER_API_KEY       = "GlvUW14Z4KBjuWls3hharj6DI"
 TWITTER_API_SECRET    = "sNjeMv8nRBJqnRhRKe3w8hXtLmDoVkIaQAoAesGnVZ50kR0b15"
 TWITTER_ACCESS_TOKEN  = "1709573049409032192-WtV8xXsNKsK89N8xu4ztfE0iY5Oorp"
 TWITTER_ACCESS_SECRET = "8ZLH56zvUqvNs1JcovqdNHRS5CW91UTZ3TH7uishJxrRF"
-# ============================
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 user_urls = {}
 used_short_links: set = set()
 
-AUTH = OAuth1(
-    TWITTER_API_KEY,
-    TWITTER_API_SECRET,
-    TWITTER_ACCESS_TOKEN,
-    TWITTER_ACCESS_SECRET
-)
+AUTH = OAuth1(TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET)
 
 
 def random_suffix(length=8) -> str:
-    chars = string.ascii_letters + string.digits
-    return ''.join(random.choices(chars, k=length))
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
 
 def make_unique_url(base_url: str) -> str:
     suffix = random_suffix(8)
-    if "?" in base_url:
-        return f"{base_url}&_t={suffix}"
-    else:
-        return f"{base_url}?_t={suffix}"
+    return f"{base_url}&_t={suffix}" if "?" in base_url else f"{base_url}?_t={suffix}"
 
 
 def post_tweet_get_tco(url: str) -> str | None:
-    """
-    Tweet POST করে সাথে সাথে t.co পায় — আলাদা GET লাগে না।
-    Tweet text এ t.co লিংক থাকে।
-    """
     try:
         response = requests.post(
             "https://api.twitter.com/2/tweets",
             auth=AUTH,
             json={"text": url},
-            timeout=12
+            timeout=15
         )
+        logger.info(f"Status: {response.status_code}, Body: {response.text[:400]}")
+
         if response.status_code != 201:
-            logger.error(f"Tweet failed: {response.status_code} {response.text[:200]}")
             return None
 
-        # Response এর text field এ t.co থাকে
-        tweet_text = response.json().get("data", {}).get("text", "")
+        resp_json = response.json()
+        tweet_id = resp_json.get("data", {}).get("id")
+        tweet_text = resp_json.get("data", {}).get("text", "")
+
+        # tweet text এ t.co আছে কিনা চেক
         for word in tweet_text.split():
             if word.startswith("https://t.co/"):
+                logger.info(f"t.co found in text: {word}")
                 return word
 
+        # না থাকলে entities দিয়ে GET করো
+        if tweet_id:
+            time.sleep(1.5)
+            detail = requests.get(
+                f"https://api.twitter.com/2/tweets/{tweet_id}",
+                auth=AUTH,
+                params={"tweet.fields": "entities"},
+                timeout=10
+            )
+            logger.info(f"Detail: {detail.status_code}, {detail.text[:400]}")
+            if detail.status_code == 200:
+                entities = detail.json().get("data", {}).get("entities", {})
+                urls = entities.get("urls", [])
+                if urls:
+                    tco = urls[0].get("url")
+                    logger.info(f"t.co from entities: {tco}")
+                    return tco
+
+        logger.error("Could not extract t.co URL")
         return None
 
     except Exception as e:
-        logger.error(f"Tweet error: {e}")
+        logger.error(f"Exception: {e}")
         return None
 
 
 def get_unique_tco(base_url: str) -> str | None:
-    for _ in range(5):
+    for _ in range(3):
         unique_url = make_unique_url(base_url)
         tco = post_tweet_get_tco(unique_url)
-        if tco:
-            if tco not in used_short_links:
-                used_short_links.add(tco)
-                return tco
-        else:
-            time.sleep(1)
+        if tco and tco not in used_short_links:
+            used_short_links.add(tco)
+            return tco
+        time.sleep(1)
     return None
 
 
@@ -127,10 +118,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "⚡ *Twitter t.co Shortener Bot* ⚡\n\n"
         "🔗 লিংক পাঠাও → কতটা চাও বেছে নাও → ব্যস!\n\n"
-        "✅ *Twitter t.co দিয়ে শর্ট হবে*\n"
-        "✅ প্রতিটা লিংক সম্পূর্ণ আলাদা (duplicate নেই)\n"
-        "✅ দ্রুত কাজ করে\n\n"
-        "📌 এখনই যেকোনো লিংক পাঠাও!",
+        "✅ Twitter t.co দিয়ে শর্ট হবে\n"
+        "✅ প্রতিটা লিংক আলাদা (duplicate নেই)\n\n"
+        "📌 এখনই লিংক পাঠাও!",
         parse_mode="Markdown"
     )
 
@@ -138,17 +128,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not is_valid_url(text):
-        await update.message.reply_text(
-            "⚠️ *Valid URL দাও!*\n`http://` বা `https://` দিয়ে শুরু হতে হবে।",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("⚠️ Valid URL দাও! `https://` দিয়ে শুরু হতে হবে।", parse_mode="Markdown")
         return
-    user_id = update.effective_user.id
-    user_urls[user_id] = text
+    user_urls[update.effective_user.id] = text
     await update.message.reply_text(
         "✅ *লিংক পেয়েছি!*\n\n👇 *কতটা Short লিংক বানাবে?*",
-        parse_mode="Markdown",
-        reply_markup=get_count_buttons()
+        parse_mode="Markdown", reply_markup=get_count_buttons()
     )
 
 
@@ -157,22 +142,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     user_id = update.effective_user.id
-    data = query.data
-
-    if not data.startswith("count_"):
+    if not query.data.startswith("count_"):
         return
 
-    count = int(data.split("_")[1])
+    count = int(query.data.split("_")[1])
     base_url = user_urls.get(user_id)
-
     if not base_url:
         await query.edit_message_text("⚠️ আগে একটা লিংক পাঠাও!")
         return
 
-    await query.edit_message_text(
-        f"⏳ *{count}টি t.co লিংক বানানো হচ্ছে...*",
-        parse_mode="Markdown"
-    )
+    await query.edit_message_text(f"⏳ *{count}টি t.co লিংক বানানো হচ্ছে...*", parse_mode="Markdown")
 
     short_links = []
     failed = 0
@@ -183,7 +162,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             short_links.append(short)
         else:
             failed += 1
-
         if i % 5 == 0:
             try:
                 await query.edit_message_text(
@@ -194,9 +172,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
     if not short_links:
-        await query.edit_message_text(
-            "❌ কোনো লিংক বানানো যায়নি।\nTwitter API limit হয়েছে, কিছুক্ষণ পর চেষ্টা করো।"
-        )
+        await query.edit_message_text("❌ কোনো লিংক বানানো যায়নি।\nTwitter API limit হয়েছে, কিছুক্ষণ পর চেষ্টা করো।")
         return
 
     await query.edit_message_text(
@@ -205,16 +181,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-    chunk_size = 20
-    for chunk_start in range(0, len(short_links), chunk_size):
-        chunk = short_links[chunk_start:chunk_start + chunk_size]
+    for chunk_start in range(0, len(short_links), 20):
+        chunk = short_links[chunk_start:chunk_start + 20]
         await update.effective_message.reply_text("\n".join(chunk))
         time.sleep(0.3)
 
     await update.effective_message.reply_text(
         "🔄 *আরো লিংক বানাতে নতুন লিংক পাঠাও!*",
-        parse_mode="Markdown",
-        reply_markup=get_count_buttons()
+        parse_mode="Markdown", reply_markup=get_count_buttons()
     )
 
 
@@ -223,7 +197,7 @@ async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    print("🤖 Twitter t.co Bot (Fast) চালু হচ্ছে...")
+    print("🤖 Twitter t.co Bot চালু হচ্ছে...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
